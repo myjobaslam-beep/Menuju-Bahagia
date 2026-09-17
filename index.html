@@ -1020,6 +1020,12 @@
 
     // Konfigurasi Firebase: Otomatis menggunakan environment global atau konfigurasi proyek Anda
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'wedding-aslam-anis';
+
+    // Import the functions you need from the SDKs you need
+    import { initializeApp } from "firebase/app";
+    import { getAnalytics } from "firebase/analytics";
+    // TODO: Add SDKs for Firebase products that you want to use
+    // https://firebase.google.com/docs/web/setup#available-libraries
     
     // Ganti objek di bawah dengan config dari Firebase Console jika di-hosting mandiri:
     const firebaseConfig = {
@@ -1032,6 +1038,9 @@
         measurementId: "G-M2XKT9KZDS"
     };
 
+    // Initialize Firebase
+    const app = initializeApp(firebaseConfig);
+    const analytics = getAnalytics(app);
     let db = null;
     let auth = null;
     let currentUser = null;
