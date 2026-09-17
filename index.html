@@ -1036,7 +1036,9 @@
     let auth = null;
     let currentUser = null;
     let wishesCollectionRef = null;
+    const COLLECTION_ID = 'wishes';
     const localWishes = [];
+    const likedWishIds = new Set();
 
     // Helper untuk sanitize teks mencegah serangan XSS
     function escapeHtml(text) {
