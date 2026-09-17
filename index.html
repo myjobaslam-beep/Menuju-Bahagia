@@ -1004,7 +1004,9 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import { 
       getAuth, 
-      signInAnonymously 
+      signInAnonymously, 
+      signInWithCustomToken,
+      onAuthStateChanged
     } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
     import { 
       getFirestore, 
@@ -1016,8 +1018,12 @@
       onSnapshot 
     } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-    // Konfigurasi Firebase Proyek Anda
-    const firebaseConfig = {
+    // App ID unik & Collection ID
+    const COLLECTION_ID = 'wishes';
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'wedding-aslam-anis';
+    
+    // Konfigurasi Firebase Proyek Anda (website-undangan-8b512)
+    const customFirebaseConfig = {
       apiKey: "AIzaSyDOkacwgu109MhyI-SapXbC5G_BNCCt1Hg",
       authDomain: "website-undangan-8b512.firebaseapp.com",
       projectId: "website-undangan-8b512",
@@ -1027,7 +1033,6 @@
       measurementId: "G-M2XKT9KZDS"
     };
 
-    const COLLECTION_ID = 'wishes';
     let db = null;
     let auth = null;
     let currentUser = null;
@@ -1035,7 +1040,7 @@
     const localWishes = [];
     const likedWishIds = new Set();
 
-    // Sanitasi teks (mencegah XSS)
+    // Helper untuk sanitize teks mencegah serangan XSS
     function escapeHtml(text) {
       if (!text) return '';
       const div = document.createElement('div');
@@ -1043,7 +1048,7 @@
       return div.innerHTML;
     }
 
-    // Avatar inisial dengan palet warna emas/hangat
+    // Generator warna avatar berdasarkan nama tamu
     function getAvatarColor(name) {
       const colors = ['bg-amber-600', 'bg-yellow-600', 'bg-orange-500', 'bg-stone-600', 'bg-champagne-600'];
       let hash = 0;
@@ -1051,10 +1056,12 @@
       return colors[Math.abs(hash) % colors.length];
     }
 
-    // Format waktu ramah pengguna
+    // Pemformat waktu relatif ramah pengguna
     function formatTimeAgo(timestamp) {
       if (!timestamp) return 'Baru saja';
-      const timeMs = typeof timestamp === 'number' ? timestamp : (timestamp.toMillis ? timestamp.toMillis() : Date.now());
+      const timeMs = typeof timestamp.toMillis === 'function' ? timestamp.toMillis() : Number(timestamp);
+      if (isNaN(timeMs)) return 'Baru saja';
+
       const diffSec = Math.floor((Date.now() - timeMs) / 1000);
       if (diffSec < 60) return 'Baru saja';
       if (diffSec < 3600) return `${Math.floor(diffSec / 60)} mnt lalu`;
@@ -1062,55 +1069,89 @@
       return `${Math.floor(diffSec / 86400)} hari lalu`;
     }
 
-    // Inisialisasi Firebase & Realtime Firestore
     async function initFirebase() {
       const statusEl = document.getElementById('firestoreStatus');
 
+      let activeConfig = null;
+      if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+        try {
+          activeConfig = JSON.parse(__firebase_config);
+        } catch (e) {
+          console.warn('Format __firebase_config tidak valid');
+        }
+      } 
+      
+      // Gunakan konfigurasi proyek Anda
+      if (!activeConfig && customFirebaseConfig.apiKey) {
+        activeConfig = customFirebaseConfig;
+      }
+
+      if (!activeConfig) {
+        if (statusEl) {
+          statusEl.innerHTML = `
+            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+            <span class="text-zinc-500">Buku Tamu Siap (Lokal)</span>
+          `;
+        }
+        return;
+      }
+
       try {
-        const app = initializeApp(firebaseConfig);
+        const app = initializeApp(activeConfig);
         auth = getAuth(app);
         db = getFirestore(app);
 
-        // Login Anonim Otomatis
-        const cred = await signInAnonymously(auth);
-        currentUser = cred.user;
+        // RULE 3: Autentikasi sebelum query Firestore
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          const cred = await signInWithCustomToken(auth, __initial_auth_token);
+          currentUser = cred.user;
+        } else {
+          const cred = await signInAnonymously(auth);
+          currentUser = cred.user;
+        }
 
-        // Hubungkan langsung ke collection 'wishes'
-        wishesCollectionRef = collection(db, COLLECTION_ID);
+        if (!currentUser) return;
+
+        // RULE 1: Jalur data Firestore
+        wishesCollectionRef = collection(db, 'artifacts', appId, 'public', 'data', COLLECTION_ID);
 
         if (statusEl) {
           statusEl.innerHTML = `
             <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span class="text-emerald-700 font-medium">Tersinkronisasi Cloud</span>
+            <span class="text-emerald-700 font-medium">Tersinkronisasi Cloud (${COLLECTION_ID})</span>
           `;
         }
 
-        // Listener Real-time
+        // RULE 2: Dengarkan realtime data
         onSnapshot(wishesCollectionRef, (snapshot) => {
           const loadedWishes = [];
           snapshot.forEach((docSnap) => {
             loadedWishes.push({ id: docSnap.id, ...docSnap.data() });
           });
 
-          // Urutkan ucapan terbaru di paling atas
-          loadedWishes.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+          // Urutkan ucapan terbaru di atas
+          loadedWishes.sort((a, b) => {
+            const timeA = typeof a.createdAt?.toMillis === 'function' ? a.createdAt.toMillis() : (a.createdAt || 0);
+            const timeB = typeof b.createdAt?.toMillis === 'function' ? b.createdAt.toMillis() : (b.createdAt || 0);
+            return timeB - timeA;
+          });
           renderWishes(loadedWishes);
         }, (error) => {
           console.error('Koneksi Firestore error:', error);
           if (statusEl) {
             statusEl.innerHTML = `
               <span class="w-2 h-2 rounded-full bg-rose-500"></span>
-              <span class="text-rose-600">Izin Database Ditolak</span>
+              <span class="text-rose-600">Periksa Security Rules</span>
             `;
           }
         });
 
       } catch (err) {
-        console.warn('Gagal menghubungkan ke Firestore, menggunakan mode lokal:', err);
+        console.warn('Gagal menghubungkan ke Firestore, beralih ke mode lokal:', err);
         if (statusEl) {
           statusEl.innerHTML = `
-            <span class="w-2 h-2 rounded-full bg-amber-500"></span>
-            <span class="text-amber-700">Mode Lokal</span>
+            <span class="w-2 h-2 rounded-full bg-zinc-400"></span>
+            <span>Mode Standalone</span>
           `;
         }
       }
@@ -1137,10 +1178,11 @@
       container.innerHTML = wishes.map((wish) => {
         const timeAgo = formatTimeAgo(wish.createdAt);
         const likes = wish.likes || 0;
-        const senderName = wish.name || 'Tamu';
+        const senderName = wish.name || wish.senderName || 'Tamu';
         const initial = senderName.charAt(0).toUpperCase();
         const avatarBg = getAvatarColor(senderName);
         const isLiked = likedWishIds.has(wish.id);
+        const heartClass = isLiked ? 'fa-solid fa-heart text-rose-500 scale-110' : 'fa-regular fa-heart group-hover:scale-110';
 
         return `
           <div class="bg-white/95 p-4 rounded-2xl border border-gold-300 shadow-xs transition duration-300 hover:shadow-md" data-wish-id="${wish.id}">
@@ -1166,7 +1208,7 @@
 
             <div class="flex items-center justify-end mt-2 pt-2 border-t border-zinc-100">
               <button onclick="toggleWishReaction('${wish.id}', ${likes}, this)" class="text-zinc-400 hover:text-rose-500 text-xs flex items-center gap-1.5 transition group">
-                <i class="${isLiked ? 'fa-solid fa-heart text-rose-500' : 'fa-regular fa-heart'} group-hover:scale-110 transition"></i>
+                <i class="${heartClass} transition"></i>
                 <span class="like-counter font-medium">${likes}</span>
               </button>
             </div>
@@ -1175,7 +1217,6 @@
       }).join('');
     }
 
-    // Submit Wish ke Firestore
     window.handleWishSubmit = async function(e) {
       e.preventDefault();
       const nameInput = document.getElementById('wishSenderName');
@@ -1201,17 +1242,19 @@
             relationship: relationship,
             message: message,
             likes: 0,
-            createdAt: Date.now()
+            createdAt: Date.now(),
+            userId: currentUser.uid || 'anonymous'
           });
         } else {
-          localWishes.unshift({
+          const newWish = {
             id: 'local-' + Date.now(),
             name: name,
             relationship: relationship,
             message: message,
             likes: 0,
             createdAt: Date.now()
-          });
+          };
+          localWishes.unshift(newWish);
           renderWishes(localWishes);
         }
 
@@ -1228,11 +1271,13 @@
       }
     };
 
-    // Apresiasi Love / Reaction
     window.toggleWishReaction = async function(wishId, currentLikes, btn) {
-      if (likedWishIds.has(wishId)) return;
-      likedWishIds.add(wishId);
+      if (likedWishIds.has(wishId)) {
+        showToast('Anda sudah mengaminkan doa ini ❤️');
+        return;
+      }
 
+      likedWishIds.add(wishId);
       const icon = btn.querySelector('i');
       const counter = btn.querySelector('.like-counter');
 
@@ -1241,20 +1286,43 @@
       if (counter) counter.textContent = newCount;
       showToast('Doa restu diaminkan ❤️');
 
-      if (db && wishId && !wishId.startsWith('local-')) {
+      if (db && wishesCollectionRef && currentUser && wishId && !wishId.startsWith('local-')) {
         try {
-          const wishDocRef = doc(db, COLLECTION_ID, wishId);
+          const wishDocRef = doc(db, 'artifacts', appId, 'public', 'data', COLLECTION_ID, wishId);
           await updateDoc(wishDocRef, {
             likes: increment(1)
           });
         } catch (err) {
-          console.error('Gagal like ke Firestore:', err);
+          console.error('Gagal memperbarui like ke Firestore:', err);
         }
+      } else {
+        const localItem = localWishes.find(w => w.id === wishId);
+        if (localItem) localItem.likes = newCount;
       }
     };
 
+    window.addEventListener('DOMContentLoaded', () => {
+      // Ambil nama tamu dari parameter URL (?to=Nama+Tamu)
+      const urlParams = new URLSearchParams(window.location.search);
+      const guestParam = urlParams.get('to') || urlParams.get('u') || urlParams.get('guest');
+      if (guestParam) {
+        const decodedName = decodeURIComponent(guestParam);
+        const guestNameEl = document.getElementById('guestNameDisplay');
+        if (guestNameEl) guestNameEl.textContent = decodedName;
+        const rsvpNameInput = document.getElementById('rsvpName');
+        const wishNameInput = document.getElementById('wishSenderName');
+        if (rsvpNameInput) rsvpNameInput.value = decodedName;
+        if (wishNameInput) wishNameInput.value = decodedName;
+      }
+
+      initCountdown();
+      initScrollAnimation();
+      initPetalCanvas();
+      initFirebase();
+    });
+
     // ----------------------------------------------------
-    // KONTROL BUKA UNDANGAN & AUDIO (Aman dari autoplay block)
+    // AUDIO CONTROLS & AUTOPLAY
     // ----------------------------------------------------
     let isPlayingAudio = false;
     const audio = document.getElementById('weddingAudio');
@@ -1267,14 +1335,12 @@
       const cover = document.getElementById('coverScreen');
       const main = document.getElementById('mainContent');
 
-      // Geser cover ke atas dan tampilkan konten utama
-      if (cover) cover.style.transform = 'translateY(-100%)';
-      if (main) main.classList.remove('opacity-0');
+      cover.style.transform = 'translateY(-100%)';
+      main.classList.remove('opacity-0');
 
       if (musicWrapper) musicWrapper.classList.remove('opacity-0', 'pointer-events-none');
       if (bottomNav) bottomNav.classList.remove('opacity-0', 'pointer-events-none');
 
-      // Putar lagu Catbox
       playAudio();
 
       setTimeout(() => {
@@ -1291,7 +1357,7 @@
           if (soundWaves) soundWaves.style.display = 'flex';
           if (audioIcon) audioIcon.classList.add('hidden');
         }).catch((err) => {
-          console.warn('Autoplay audio ditunda browser:', err);
+          console.warn('Pemutaran otomatis audio tertunda:', err);
           markAudioStopped();
         });
       }
@@ -1317,7 +1383,7 @@
     };
 
     // ----------------------------------------------------
-    // ANIMASI KELOPAK BUNGA EMAS
+    // CANVAS KELOPAK BUNGA EMAS MELAYANG
     // ----------------------------------------------------
     function initPetalCanvas() {
       const canvas = document.getElementById('petalCanvas');
@@ -1377,7 +1443,7 @@
     }
 
     // ----------------------------------------------------
-    // HITUNG MUNDUR (16 OKT 2026)
+    // COUNTDOWN TIMER MENUJU 16 OKTOBER 2026
     // ----------------------------------------------------
     function initCountdown() {
       const targetDate = new Date('2026-10-16T09:00:00+07:00').getTime();
@@ -1415,7 +1481,7 @@
     }
 
     // ----------------------------------------------------
-    // SALIN KE CLIPBOARD
+    // CLIPBOARD SALIN NOMOR & ALAMAT
     // ----------------------------------------------------
     window.copyToClipboard = function(text, description) {
       const textArea = document.createElement('textarea');
@@ -1458,7 +1524,7 @@
     }
 
     // ----------------------------------------------------
-    // LIGHTBOX GALERI FOTO
+    // LIGHTBOX FOTO GALERI
     // ----------------------------------------------------
     const galleryImages = [
       "https://lh3.googleusercontent.com/d/1fbtRBp7s7oouL08o2MrXFo0giHQhLsWl",
@@ -1529,13 +1595,14 @@
     };
 
     // ----------------------------------------------------
-    // SCROLL REVEAL OBSERVER
+    // ANIMASI SCROLL REVEAL (INTERSECTION OBSERVER)
     // ----------------------------------------------------
     function initScrollAnimation() {
-      const observer = new IntersectionObserver((entries) => {
+      const observer = new IntersectionObserver((entries, obs) => {
         entries.forEach(entry => {
           if (entry.isIntersecting) {
             entry.target.classList.add('is-visible');
+            obs.unobserve(entry.target);
           }
         });
       }, { root: null, rootMargin: '0px', threshold: 0.12 });
@@ -1553,26 +1620,6 @@
         }
       });
     }
-
-    // Initializer saat dokumen selesai dimuat
-    window.addEventListener('DOMContentLoaded', () => {
-      const urlParams = new URLSearchParams(window.location.search);
-      const guestParam = urlParams.get('to') || urlParams.get('u') || urlParams.get('guest');
-      if (guestParam) {
-        const decodedName = decodeURIComponent(guestParam);
-        const guestNameEl = document.getElementById('guestNameDisplay');
-        if (guestNameEl) guestNameEl.textContent = decodedName;
-        const rsvpNameInput = document.getElementById('rsvpName');
-        const wishNameInput = document.getElementById('wishSenderName');
-        if (rsvpNameInput) rsvpNameInput.value = decodedName;
-        if (wishNameInput) wishNameInput.value = decodedName;
-      }
-
-      initCountdown();
-      initScrollAnimation();
-      initPetalCanvas();
-      initFirebase();
-    });
   </script>
 </body>
 </html>
